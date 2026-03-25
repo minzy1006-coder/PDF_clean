@@ -2,20 +2,44 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import re
 import os
+import sys
 import glob
 import fitz  # PyMuPDF: PDF 처리를 위한 강력한 라이브러리
+
+# [Frontend/UX] 고품질 이미지 리사이징을 위해 Pillow 라이브러리 사용
+# 설치 필요: pip install Pillow
+try:
+    from PIL import Image, ImageTk
+except ImportError:
+    Image = None
+    ImageTk = None
+
+def resource_path(relative_path):
+    """
+    [Backend/Ops] PyInstaller 등으로 exe 빌드 시 임시 폴더(MEIPASS)의 절대 경로를 찾기 위한 헬퍼 함수.
+    IDE(VSCode, PyCharm)에서 실행 위치(CWD)가 다를 때를 대비해 __file__ 기준으로 절대 경로를 잡습니다.
+    """
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        # os.path.abspath(".") 대신 실행 중인 스크립트의 위치를 기준으로 잡음 (강력한 경로 탐색)
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
 
 class PDFCleanerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("PDF 목차 클리너 - 심플 & 고속 (다중 파일 지원)")
-        self.root.geometry("650x600")
+        # 👇 이 타이틀이 뜨는지 꼭 확인하세요!
+        self.root.title("데이터클립 PDF 목차 클리너 - 심플 & 고속 (다중 파일 지원)")
+        self.root.geometry("650x640") 
         self.root.configure(padx=20, pady=20)
         
         # 상태 관리 (다중 파일 처리를 위한 리스트 구조)
-        # pdf_data 형식: [{'path': str, 'filename': str, 'original_toc': list, 'cleaned_toc': list, 'stats': dict}]
         self.pdf_data = []
         self.total_stats = {}
+        
+        # Tkinter 이미지 객체는 가비지 컬렉션(GC)에 의해 날아갈 수 있으므로 클래스 변수에 저장해야 합니다.
+        self.logo_img = None 
         
         self.setup_ui()
 
@@ -24,10 +48,47 @@ class PDFCleanerApp:
         header_frame = ttk.Frame(self.root)
         header_frame.pack(fill=tk.X, pady=(0, 20))
         
-        title_label = ttk.Label(header_frame, text="✨ PDF 목차 클리너", font=("Helvetica", 18, "bold"))
-        title_label.pack()
-        desc_label = ttk.Label(header_frame, text="파일 또는 폴더를 선택하여 여러 PDF의 특수문자를 한 번에 정제하세요.", foreground="gray")
-        desc_label.pack()
+        # --- [Frontend/UX] 레이아웃 분리: 좌측(텍스트), 우측(로고) ---
+        text_frame = ttk.Frame(header_frame)
+        text_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        logo_frame = ttk.Frame(header_frame)
+        logo_frame.pack(side=tk.RIGHT, padx=(10, 0))
+
+        # 타이틀 및 설명 (좌측 프레임에 정렬)
+        title_label = ttk.Label(text_frame, text="✨ PDF 목차 클리너", font=("Helvetica", 18, "bold"))
+        title_label.pack(anchor=tk.W) # 왼쪽(West) 정렬
+        desc_label = ttk.Label(text_frame, text="파일 또는 폴더를 선택하여 여러 PDF의 특수문자를 한 번에 정제하세요.", foreground="gray")
+        desc_label.pack(anchor=tk.W, pady=(5, 0))
+        
+        # ---------------------------------------------------------
+        # ✨ 로고 이미지 추가 영역 (우측 프레임에 배치)
+        # ---------------------------------------------------------
+        logo_filename = "데이터클립_회색로고.png"
+        logo_path = resource_path(logo_filename)
+        
+        if Image and ImageTk and os.path.exists(logo_path):
+            try:
+                # 이미지 로드
+                img = Image.open(logo_path)
+                
+                # 비율 유지하며 높이 45px로 리사이징
+                base_height = 45
+                h_percent = (base_height / float(img.size[1]))
+                w_size = int((float(img.size[0]) * float(h_percent)))
+                
+                # 하위 호환성을 고려한 리샘플링 필터
+                resample_filter = getattr(Image, 'Resampling', Image).LANCZOS 
+                img = img.resize((w_size, base_height), resample_filter)
+                
+                self.logo_img = ImageTk.PhotoImage(img) # GC 방지
+                
+                # 로고를 오른쪽 프레임(logo_frame)에 넣고 오른쪽(East) 정렬
+                logo_label = ttk.Label(logo_frame, image=self.logo_img)
+                logo_label.pack(anchor=tk.E)
+            except Exception as e:
+                print(f"[Warn] 로고 이미지를 불러오는 중 오류 발생: {e}")
+        # ---------------------------------------------------------
 
         # 파일 업로드 영역
         upload_frame = ttk.LabelFrame(self.root, text=" 1. 파일 및 폴더 선택 ", padding=15)
@@ -79,8 +140,12 @@ class PDFCleanerApp:
         save_frame = ttk.Frame(self.root)
         save_frame.pack(fill=tk.X)
         
+        # 🔥 새로 추가된 TOC 내보내기 버튼
+        self.btn_save_toc = ttk.Button(save_frame, text="📑 TOC 내보내기", command=self.save_toc, state=tk.DISABLED)
+        self.btn_save_toc.pack(side=tk.RIGHT)
+        
         self.btn_save = ttk.Button(save_frame, text="💾 정제된 PDF 저장", command=self.save_pdf, state=tk.DISABLED)
-        self.btn_save.pack(side=tk.RIGHT)
+        self.btn_save.pack(side=tk.RIGHT, padx=(0, 10))
         
         self.btn_reset = ttk.Button(save_frame, text="초기화", command=self.reset_all)
         self.btn_reset.pack(side=tk.RIGHT, padx=(0, 10))
@@ -147,6 +212,7 @@ class PDFCleanerApp:
         self.render_treeview(is_cleaned=False)
         self.btn_clean.config(state=tk.NORMAL)
         self.btn_save.config(state=tk.NORMAL)
+        self.btn_save_toc.config(state=tk.NORMAL) # TOC 버튼 활성화
 
     def load_file(self):
         file_path = filedialog.askopenfilename(
@@ -226,6 +292,95 @@ class PDFCleanerApp:
             
         messagebox.showinfo("일괄 치환 완료 보고서", msg)
 
+    # --------------------------------------------------------------------------------
+    # 🚀 TOC 내보내기 관련 백엔드 로직 (기존 HTML/JS 버전의 태그 구분 및 들여쓰기 완벽 이식)
+    # --------------------------------------------------------------------------------
+    def _write_toc_file(self, data, save_path):
+        """단일 PDF 데이터의 목차를 추출해 HTML 유사 형식(.toc) 텍스트로 저장하는 코어 로직"""
+        toc_list = data['cleaned_toc'] # [level, title, page] 구조
+        if not toc_list:
+            return
+            
+        # JS 코드의 `minDepth` 계산 방식과 동일하게 최소 깊이를 구함
+        min_depth = min(item[0] for item in toc_list)
+        toc_content = ""
+        current_tag = None
+        
+        for lvl, title, page in toc_list:
+            next_tag = current_tag or 'body'
+            
+            # 최상위 레벨 항목일 때 태그 종류 판단
+            if lvl == min_depth:
+                lower_title = title.replace(" ", "").lower()
+                if "표목차" in lower_title:
+                    next_tag = "table"
+                elif "그림목차" in lower_title or "도목차" in lower_title:
+                    next_tag = "figure"
+                elif "박스목차" in lower_title or "글상자목차" in lower_title:
+                    next_tag = "box"
+                else:
+                    next_tag = "body"
+                    
+            # 태그가 바뀌거나 맨 처음 시작할 때 (태그 열고 바로 같은 줄에 텍스트 작성)
+            if current_tag != next_tag or not current_tag:
+                if current_tag:
+                    toc_content += f"</{current_tag}>\n"
+                current_tag = next_tag
+                toc_content += f"<{current_tag}>{title} {page}\n"
+            else:
+                # 같은 태그 내의 일반/하위 항목 (들여쓰기 적용)
+                rel_depth = lvl - min_depth
+                indent = " " * (rel_depth if rel_depth > 0 else 0)
+                toc_content += f"{indent}{title} {page}\n"
+                
+        # 마지막으로 열려있는 태그 닫기
+        if current_tag:
+            toc_content += f"</{current_tag}>\n"
+            
+        # [Backend Tip] 한글 인코딩 문제(cp949 에러)를 방지하기 위해 반드시 utf-8을 명시합니다.
+        with open(save_path, 'w', encoding='utf-8') as f:
+            f.write(toc_content)
+
+    def save_toc(self):
+        if not self.pdf_data:
+            return
+            
+        # 1. 단일 파일 TOC 저장
+        if len(self.pdf_data) == 1:
+            data = self.pdf_data[0]
+            base_filename = os.path.splitext(data['filename'])[0]
+            save_path = filedialog.asksaveasfilename(
+                title="TOC 파일 저장",
+                defaultextension=".toc",
+                initialfile=f"{base_filename}",
+                filetypes=(("TOC Files", "*.toc"), ("Text Files", "*.txt"), ("All Files", "*.*"))
+            )
+            if not save_path: return
+            
+            try:
+                self._write_toc_file(data, save_path)
+                messagebox.showinfo("저장 완료", f"TOC 파일이 성공적으로 저장되었습니다!\n\n경로: {save_path}")
+            except Exception as e:
+                messagebox.showerror("오류", f"TOC 저장 중 오류가 발생했습니다.\n{str(e)}")
+                
+        # 2. 다중 파일(폴더) 일괄 TOC 저장
+        else:
+            save_dir = filedialog.askdirectory(title="TOC 파일들을 저장할 폴더 선택")
+            if not save_dir: return
+            
+            success_count = 0
+            try:
+                for data in self.pdf_data:
+                    base_filename = os.path.splitext(data['filename'])[0]
+                    save_path = os.path.join(save_dir, f"{base_filename}.toc")
+                    self._write_toc_file(data, save_path)
+                    success_count += 1
+                    
+                messagebox.showinfo("일괄 저장 완료", f"총 {success_count}개의 TOC 파일이 성공적으로 저장되었습니다!\n\n경로: {save_dir}")
+            except Exception as e:
+                messagebox.showerror("오류", f"일괄 저장 중 오류가 발생했습니다.\n{str(e)}")
+    # --------------------------------------------------------------------------------
+
     def save_pdf(self):
         if not self.pdf_data:
             return
@@ -286,6 +441,7 @@ class PDFCleanerApp:
             
         self.btn_clean.config(state=tk.DISABLED)
         self.btn_save.config(state=tk.DISABLED)
+        self.btn_save_toc.config(state=tk.DISABLED)
 
 
 if __name__ == "__main__":
